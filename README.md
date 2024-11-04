@@ -51,3 +51,58 @@ Ce code implémente un web crawler conçu pour explorer un site web de manière 
 ### 5. **Exécution principale (`__main__`)**
    - Définit l’URL de départ (`START_URL`) et le nombre maximal de threads (`MAX_WORKERS`) pour le crawl.
    - Instancie un objet `Crawler` et lance la méthode `crawl` pour démarrer l’exploration du site.
+
+
+## How to use it 
+Pour exécuter ce web crawler, suivez les étapes ci-dessous :
+
+### 1. **Installer les dépendances**
+   Avant de lancer le script, vous devez installer les bibliothèques Python nécessaires. Ce script utilise plusieurs packages externes, donc vérifiez qu’ils sont installés avec la commande suivante :
+
+   ```bash
+   pip install requests beautifulsoup4 pdfplumber lxml
+   ```
+
+   Ces bibliothèques comprennent :
+   - **requests** : pour effectuer les requêtes HTTP.
+   - **beautifulsoup4** et **lxml** : pour analyser le contenu HTML.
+   - **pdfplumber** : pour extraire le texte et les tableaux des fichiers PDF.
+
+### 2. **Configurer le script**
+   Ouvrez le script et vérifiez les éléments suivants :
+
+   - **URL de départ** : Remplacez `START_URL` par l'URL que vous souhaitez explorer. Assurez-vous que l'URL est complète et bien formatée (par exemple, `https://www.votresite.com`).
+   
+     ```python
+     START_URL = "https://www.votresite.com"
+     ```
+
+   - **Nombre de threads (MAX_WORKERS)** : Ajustez le nombre de threads (`MAX_WORKERS`) en fonction de votre machine et de la capacité du serveur que vous explorez. Un nombre plus élevé de threads permet de crawler plus vite, mais peut surcharger le serveur et entraîner des blocages ou des limitations.
+
+     ```python
+     MAX_WORKERS = 10  # Ajustez selon les ressources disponibles et les règles d'accès du site cible.
+     ```
+
+### 3. **Exécuter le script**
+   Assurez-vous de vous placer dans le dossier où se trouve le script, puis lancez le crawler avec la commande suivante dans le terminal :
+
+   ```bash
+   python mon_crawler.py
+   ```
+
+   > Remplacez `mon_crawler.py` par le nom du fichier dans lequel vous avez sauvegardé ce code.
+
+### 4. **Observer les logs**
+   Le script enregistre les événements importants dans un fichier `crawler_log.txt` situé dans le même dossier que le script. Vous pouvez également suivre le déroulement du crawl dans la console, car les logs sont configurés pour y être affichés.
+
+   - **Informations des logs** : vous y verrez des messages pour chaque page explorée, les erreurs rencontrées, et des détails sur les pages non trouvées ou les erreurs de connexion. 
+
+### 5. **Vérifier les résultats**
+   - Les résultats sont sauvegardés dans un dossier `text/` qui se crée automatiquement dans le dossier de votre script. Dans ce dossier, vous trouverez un sous-dossier nommé en fonction du domaine du site exploré (par exemple, `text/votresite.com`).
+   - Chaque page explorée est enregistrée sous forme de fichier texte `.txt`, dont le nom est une version normalisée de l'URL de la page.
+
+### 6. **Arrêter le script**
+   Le script continue d'explorer les pages jusqu'à ce qu'il n’y ait plus de nouvelles URLs dans la queue. Si vous souhaitez arrêter le crawler manuellement, vous pouvez le faire avec un **Ctrl+C** dans le terminal, ce qui terminera le processus.
+
+### 7. **Relancer le crawler**
+   Si vous souhaitez relancer le crawler ultérieurement, il ne revisitera pas les pages déjà explorées grâce à la base de données SQLite qui garde une trace des URLs visitées. Assurez-vous que le fichier de base de données `crawler.db` est toujours dans le dossier de travail pour que le script continue là où il s'est arrêté.
