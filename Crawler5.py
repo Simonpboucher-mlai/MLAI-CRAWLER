@@ -150,3 +150,363 @@ class FileHandler:
             counter += 1
             
         return filename
+
+# Part 2: Enhanced Crawler Class and Main Execution
+
+class EnhancedCrawler:
+    def __init__(self, base_url: str, max_pages: int = 1000, 
+                 concurrent_requests: int = 5, request_delay: float = 0.1,
+                 timeout: int = 30, max_retries: int = 3,
+                 download_files: bool = True):
+        self.base_url = base_url
+        self.domain = urlparse(base_url).netloc
+        self.max_pages = max_pages
+        self.concurrent_requests = concurrent_requests
+        self.request_delay = request_delay
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.download_files = download_files
+        
+        # Initialize handlers
+        self.file_handler = FileHandler(None)  # Will set logger after setup
+        self.pdf_processor = PDFProcessor(None)  # Will set logger after setup
+        
+        # Setup logging
+        self._setup_logging()
+        
+        # Update handlers with logger
+        self.file_handler.logger = self.logger
+        self.pdf_processor.logger = self.logger
+        
+        # Initialize storage
+        self._setup_storage()
+        
+        # Initialize session
+        self._setup_session()
+        
+        # Initialize tracking
+        self._init_tracking()
+
+    def _setup_logging(self):
+        """Setup logging configuration"""
+        log_dir = "logs"
+        os.makedirs(log_dir, exist_ok=True)
+        
+        logging.basicConfig(
+            filename=f'logs/crawler_{self.domain}_{int(time.time())}.log',
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
+
+    def _setup_storage(self):
+        """Setup storage directories"""
+        self.base_dir = f"crawled_data/{self.domain}"
+        self.text_dir = f"{self.base_dir}/text"
+        self.meta_dir = f"{self.base_dir}/metadata"
+        self.files_dir = f"{self.base_dir}/files"
+        
+        # Create main directories
+        for directory in [self.text_dir, self.meta_dir]:
+            os.makedirs(directory, exist_ok=True)
+            
+        # Create directories for file categories
+        if self.download_files:
+            for category in self.file_handler.downloadable_extensions.keys():
+                os.makedirs(f"{self.files_dir}/{category}", exist_ok=True)
+
+    def _setup_session(self):
+        """Setup requests session with custom headers"""
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Custom Web Crawler (with permission to bypass robots.txt)',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        })
+
+    def _init_tracking(self):
+        """Initialize tracking variables"""
+        self.seen_urls: Set[str] = set()
+        self.failed_urls: Set[str] = set()
+        self.content_hashes: Set[str] = set()
+        self.downloaded_files: Dict[str, Set[str]] = {
+            category: set() for category in self.file_handler.downloadable_extensions.keys()
+        }
+        self.pdf_stats = {
+            'processed': 0,
+            'failed': 0,
+            'extraction_methods': {
+                'pdfminer': 0,
+                'pypdf2': 0,
+                'ocr': 0
+            }
+        }
+
+    def _normalize_url(self, url: str) -> str:
+        """Normalize URL to prevent duplicate crawling"""
+        url = urljoin(self.base_url, url)
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip('/')
+
+    def _is_valid_url(self, url: str) -> bool:
+        """Check if URL is valid and should be processed"""
+        if not url:
+            return False
+        
+        parsed = urlparse(url)
+        
+        if parsed.netloc and parsed.netloc != self.domain:
+            return False
+            
+        excluded_patterns = [
+            r'(login|logout|signin|signout|auth)',
+            r'#.*$'
+        ]
+        
+        return not any(re.search(pattern, url.lower()) for pattern in excluded_patterns)
+
+    async def _process_pdf(self, pdf_path: str, url: str) -> Optional[dict]:
+        """Process PDF file and extract text"""
+        try:
+            extracted_text, method_used = self.pdf_processor.extract_text_from_pdf(pdf_path)
+            
+            if not extracted_text.strip():
+                self.logger.warning(f"No text extracted from PDF: {url}")
+                self.pdf_stats['failed'] += 1
+                return None
+            
+            self.pdf_stats['processed'] += 1
+            self.pdf_stats['extraction_methods'][method_used] += 1
+            
+            url_hash = hashlib.md5(url.encode()).hexdigest()
+            text_path = f"{self.text_dir}/{url_hash}_pdf.txt"
+            
+            with open(text_path, 'w', encoding='utf-8') as f:
+                f.write(extracted_text)
+            
+            metadata = {
+                'url': url,
+                'source_file': pdf_path,
+                'extraction_method': method_used,
+                'timestamp': time.time(),
+                'text_file': text_path,
+                'text_length': len(extracted_text)
+            }
+            
+            return metadata
+            
+        except Exception as e:
+            self.logger.error(f"Error processing PDF {url}: {str(e)}")
+            self.pdf_stats['failed'] += 1
+            return None
+
+    async def _download_file(self, url: str, category: str) -> Optional[dict]:
+        """Download and process file"""
+        try:
+            response = self.session.get(
+                url,
+                timeout=self.timeout,
+                stream=True
+            )
+            response.raise_for_status()
+            
+            filepath = f"{self.files_dir}/{category}/{self.file_handler.generate_safe_filename(url, f'{self.files_dir}/{category}')}"
+            
+            total_size = 0
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        total_size += len(chunk)
+            
+            metadata = {
+                'url': url,
+                'filename': os.path.basename(filepath),
+                'category': category,
+                'size': total_size,
+                'timestamp': time.time(),
+                'headers': dict(response.headers),
+                'status_code': response.status_code,
+                'filepath': filepath
+            }
+            
+            if category == 'document' and filepath.lower().endswith('.pdf'):
+                pdf_metadata = await self._process_pdf(filepath, url)
+                if pdf_metadata:
+                    metadata['pdf_extraction'] = pdf_metadata
+            
+            self.downloaded_files[category].add(url)
+            self.logger.info(f"Downloaded file: {url} -> {filepath}")
+            
+            return metadata
+            
+        except Exception as e:
+            self.logger.error(f"Error downloading file {url}: {str(e)}")
+            self.failed_urls.add(url)
+            return None
+
+    async def _fetch_url(self, url: str) -> Optional[dict]:
+        """Fetch URL content with retries"""
+        for attempt in range(self.max_retries):
+            try:
+                response = self.session.get(
+                    url, 
+                    timeout=self.timeout,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
+                
+                if 'text/html' not in response.headers.get('Content-Type', ''):
+                    self.logger.warning(f"Skipping non-HTML content: {url}")
+                    return None
+                
+                content_hash = hashlib.md5(response.content).hexdigest()
+                if content_hash in self.content_hashes:
+                    self.logger.info(f"Duplicate content found: {url}")
+                    return None
+                self.content_hashes.add(content_hash)
+                
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                metadata = {
+                    'url': url,
+                    'title': soup.title.string if soup.title else None,
+                    'timestamp': time.time(),
+                    'headers': dict(response.headers),
+                    'status_code': response.status_code
+                }
+                
+                text_content = ' '.join(soup.stripped_strings)
+                
+                return {
+                    'metadata': metadata,
+                    'content': text_content,
+                    'html': response.text
+                }
+                
+            except Exception as e:
+                self.logger.error(f"Error fetching {url} (attempt {attempt + 1}): {str(e)}")
+                time.sleep(self.request_delay * (attempt + 1))
+        
+        self.failed_urls.add(url)
+        return None
+
+    def _extract_links(self, html: str, source_url: str) -> List[str]:
+        """Extract and normalize links from HTML content"""
+        soup = BeautifulSoup(html, 'html.parser')
+        links = []
+        
+        for anchor in soup.find_all('a', href=True):
+            url = self._normalize_url(anchor['href'])
+            if self._is_valid_url(url):
+                links.append(url)
+                
+        return list(set(links))
+
+    def _save_data(self, url: str, data: dict):
+        """Save crawled data and metadata"""
+        if not data:
+            return
+            
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        
+        # Save text content
+        text_path = f"{self.text_dir}/{url_hash}.txt"
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(data['content'])
+            
+        # Save metadata
+        meta_path = f"{self.meta_dir}/{url_hash}.json"
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(data['metadata'], f, indent=2)
+
+    async def _process_url(self, url: str):
+        """Process a URL - either crawl it or download it if it's a file"""
+        if self.file_handler.is_downloadable_file(url):
+            category = self.file_handler.get_file_category(url)
+            if category:
+                metadata = await self._download_file(url, category)
+                if metadata:
+                    # Save file metadata
+                    meta_path = f"{self.meta_dir}/{hashlib.md5(url.encode()).hexdigest()}_file.json"
+                    with open(meta_path, 'w', encoding='utf-8') as f:
+                        json.dump(metadata, f, indent=2)
+                return None
+        else:
+            return await self._fetch_url(url)
+
+    async def crawl(self):
+        """Main crawling method"""
+        queue = deque([self.base_url])
+        self.seen_urls.add(self.base_url)
+        
+        with ThreadPoolExecutor(max_workers=self.concurrent_requests) as executor:
+            while queue and len(self.seen_urls) < self.max_pages:
+                url = queue.popleft()
+                self.logger.info(f"Processing: {url}")
+                
+                # Process URL (either crawl or download)
+                data = await self._process_url(url)
+                
+                if data:  # If it's a webpage with HTML content
+                    # Save the webpage data
+                    self._save_data(url, data)
+                    
+                    # Extract and queue new links
+                    new_links = self._extract_links(data['html'], url)
+                    for link in new_links:
+                        if link not in self.seen_urls:
+                            queue.append(link)
+                            self.seen_urls.add(link)
+                
+                # Respect rate limiting
+                time.sleep(self.request_delay)
+        
+        # Save crawl statistics
+        stats = {
+            'pages_crawled': len(self.seen_urls),
+            'files_downloaded': {
+                category: len(files) 
+                for category, files in self.downloaded_files.items()
+            },
+            'failed_urls': list(self.failed_urls),
+            'total_time': time.time() - time.time(),
+            'pdf_processing': self.pdf_stats
+        }
+        
+        with open(f"{self.base_dir}/crawl_stats.json", 'w') as f:
+            json.dump(stats, f, indent=2)
+
+def main():
+    """Main function to run the crawler"""
+    # Print requirements first
+    print("""Required packages for crawler with PDF processing:
+    pip install requests beautifulsoup4 PyPDF2 pdf2image pytesseract PyMuPDF Pillow
+
+    System requirements:
+    1. Tesseract OCR must be installed:
+       - Ubuntu: sudo apt-get install tesseract-ocr
+       - macOS: brew install tesseract
+       - Windows: download installer from https://github.com/UB-Mannheim/tesseract/wiki
+
+    2. Poppler utilities (for pdf2image):
+       - Ubuntu: sudo apt-get install poppler-utils
+       - macOS: brew install poppler
+       - Windows: download from http://blog.alivate.com.au/poppler-windows/
+    """)
+
+    # Initialize and run crawler
+    crawler = EnhancedCrawler(
+        base_url="https://example.com",  # Replace with your target URL
+        max_pages=100,
+        concurrent_requests=5,
+        request_delay=0.2,
+        download_files=True
+    )
+    
+    import asyncio
+    asyncio.run(crawler.crawl())
+
+if __name__ == "__main__":
+    main()
